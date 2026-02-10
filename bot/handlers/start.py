@@ -5,7 +5,7 @@ from aiogram.types import Message
 import aiosqlite
 
 from bot.db import queries
-from bot.keyboards.menus import main_menu, BTN_CREATE_POST, BTN_MY_POSTS
+from bot.keyboards.menus import main_menu, BTN_MY_POSTS
 
 router = Router()
 
@@ -22,20 +22,6 @@ async def cmd_start(message: Message, db: aiosqlite.Connection, state: FSMContex
         "Для начала добавьте меня администратором в ваш канал, "
         "а затем подключите канал через меню.",
         reply_markup=main_menu(),
-    )
-
-
-
-@router.message(F.text == BTN_CREATE_POST)
-async def menu_create_post(message: Message, db: aiosqlite.Connection):
-    channels = await queries.get_channels(db, message.from_user.id)
-    if not channels:
-        await message.answer(
-            "Сначала подключите хотя бы один канал через «📢 Мои каналы».",
-        )
-        return
-    await message.answer(
-        "Создание нового поста будет доступно в следующем обновлении.",
     )
 
 

@@ -34,11 +34,11 @@ async def main():
     # Register middleware
     dp.update.middleware(DatabaseMiddleware(db))
 
-    # Register routers
+    # Register routers (posts first — FSM handlers must have priority)
     dp.include_routers(
-        start.router,
-        channels.router,
         posts.router,
+        channels.router,
+        start.router,
     )
 
     logger.info("Bot starting...")
