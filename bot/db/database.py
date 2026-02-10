@@ -43,22 +43,19 @@ CREATE TABLE IF NOT EXISTS publications (
 class Database:
     def __init__(self, db_path: Path):
         self._db_path = db_path
-        self._connection: aiosqlite.Connection | None = None
 
-    async def connect(self):
-        self._connection = await aiosqlite.connect(self._db_path)
-        self._connection.row_factory = aiosqlite.Row
-        await self._connection.executescript(SQL_CREATE_TABLES)
-        await self._connection.execute("PRAGMA journal_mode=WAL")
-        await self._connection.execute("PRAGMA foreign_keys=ON")
-        await self._connection.commit()
+    async def init(self):
+        """Create tables and set PRAGMAs. Call once on startup."""
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.executescript(SQL_CREATE_TABLES)
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.commit()
 
-    async def close(self):
-        if self._connection:
-            await self._connection.close()
+    def connect(self) -> aiosqlite.Connection:
+        """Create a new connection. Intended for use with ``async with``."""
+        return aiosqlite.connect(self._db_path)
 
     @property
-    def conn(self) -> aiosqlite.Connection:
-        if self._connection is None:
-            raise RuntimeError("Database is not connected")
-        return self._connection
+    def path(self) -> Path:
+        return self._db_path

@@ -3,6 +3,8 @@ from html import escape
 
 from aiogram import Router, F, Bot
 from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 import aiosqlite
 
@@ -12,10 +14,20 @@ from bot.keyboards.menus import BTN_MY_CHANNELS
 router = Router()
 logger = logging.getLogger(__name__)
 
+MAX_CHANNELS_PER_USER = 50
+
 CALLBACK_PREFIX_DELETE = "ch_del:"
 CALLBACK_CONFIRM_DELETE = "ch_confirm_del:"
 CALLBACK_CANCEL_DELETE = "ch_cancel_del"
 CALLBACK_ADD_CHANNEL = "ch_add"
+
+
+def _parse_cb_int(data: str, index: int = 1) -> int | None:
+    """Safely parse an int from callback_data split by ':'."""
+    try:
+        return int(data.split(":")[index])
+    except (ValueError, IndexError):
+        return None
 
 
 def _channels_keyboard(channels: list) -> InlineKeyboardMarkup:
@@ -64,7 +76,7 @@ async def cb_add_channel(callback: CallbackQuery):
 
 # ── Add channel via forwarded message ──────────────────────────────────────
 
-@router.message(F.forward_from_chat)
+@router.message(StateFilter(None), F.forward_from_chat)
 async def handle_forwarded_from_channel(message: Message, db: aiosqlite.Connection, bot: Bot):
     chat = message.forward_from_chat
     if chat.type != ChatType.CHANNEL:
@@ -75,13 +87,13 @@ async def handle_forwarded_from_channel(message: Message, db: aiosqlite.Connecti
 
 # ── Add channel via @username ──────────────────────────────────────────────
 
-@router.message(F.text.startswith("@"))
+@router.message(StateFilter(None), F.text.startswith("@"))
 async def handle_channel_username(message: Message, db: aiosqlite.Connection, bot: Bot):
     username = message.text.strip()
     try:
         chat = await bot.get_chat(username)
     except Exception:
-        await message.answer(f"Не удалось найти канал {username}. Проверьте правильность username.")
+        await message.answer(f"Не удалось найти канал {escape(username)}. Проверьте правильность username.")
         return
     if chat.type != ChatType.CHANNEL:
         await message.answer("Это не канал. Отправьте @username именно канала.")
@@ -92,6 +104,15 @@ async def handle_channel_username(message: Message, db: aiosqlite.Connection, bo
 # ── Shared add logic ──────────────────────────────────────────────────────
 
 async def _try_add_channel(message: Message, db: aiosqlite.Connection, bot: Bot, channel_id: int):
+    # Check channel limit
+    channel_count = await queries.count_channels(db, message.from_user.id)
+    if channel_count >= MAX_CHANNELS_PER_USER:
+        await message.answer(
+            f"Достигнут лимит: максимум {MAX_CHANNELS_PER_USER} каналов. "
+            "Удалите ненужные каналы, чтобы добавить новые.",
+        )
+        return
+
     # Check that the USER is admin/creator of the channel
     try:
         user_member = await bot.get_chat_member(channel_id, message.from_user.id)
@@ -152,7 +173,10 @@ async def _try_add_channel(message: Message, db: aiosqlite.Connection, bot: Bot,
 
 @router.callback_query(F.data.startswith(CALLBACK_PREFIX_DELETE))
 async def cb_delete_channel(callback: CallbackQuery):
-    channel_db_id = callback.data.split(":")[1]
+    channel_db_id = _parse_cb_int(callback.data)
+    if channel_db_id is None:
+        await callback.answer("Неверные данные.")
+        return
     await callback.message.edit_text(
         "Вы уверены, что хотите удалить этот канал?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -167,7 +191,10 @@ async def cb_delete_channel(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith(CALLBACK_CONFIRM_DELETE))
 async def cb_confirm_delete_channel(callback: CallbackQuery, db: aiosqlite.Connection):
-    channel_db_id = int(callback.data.split(":")[1])
+    channel_db_id = _parse_cb_int(callback.data)
+    if channel_db_id is None:
+        await callback.answer("Неверные данные.")
+        return
     deleted = await queries.delete_channel(db, channel_db_id, callback.from_user.id)
 
     if deleted:

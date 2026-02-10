@@ -22,8 +22,8 @@ async def main():
     config = Config.from_env()
 
     db = Database(config.database_path)
-    await db.connect()
-    logger.info("Database connected: %s", config.database_path)
+    await db.init()
+    logger.info("Database initialized: %s", config.database_path)
 
     bot = Bot(
         token=config.bot_token,
@@ -45,7 +45,6 @@ async def main():
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
-        await db.close()
         await bot.session.close()
         logger.info("Bot stopped.")
 
