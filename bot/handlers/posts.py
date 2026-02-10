@@ -1,5 +1,6 @@
 import json
 import logging
+from html import escape
 from urllib.parse import urlparse
 
 from aiogram import Router, F, Bot
@@ -22,6 +23,10 @@ from bot.states.post import CreatePost
 router = Router()
 logger = logging.getLogger(__name__)
 
+MAX_POSTS_PER_USER = 500
+MAX_BUTTON_ROWS = 5
+MAX_BUTTONS_PER_ROW = 5
+
 CANCEL_TEXT = "❌ Отмена"
 SKIP_BUTTONS_TEXT = "⏩ Без кнопок"
 
@@ -41,6 +46,26 @@ CB_POST_CONFIRM_DELETE = "post_rm_y:"
 CB_POST_BACK_LIST = "posts_back"
 CB_REPUB_CHANNEL = "rpub_ch:"
 CB_REPUB_CANCEL = "rpub_cancel"
+
+
+def _parse_cb_int(data: str, index: int = 1) -> int | None:
+    """Safely parse an int from callback_data split by ':'."""
+    try:
+        return int(data.split(":")[index])
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_cb_ints(data: str, *indices: int) -> tuple[int, ...] | None:
+    """Safely parse multiple ints from callback_data split by ':'."""
+    parts = data.split(":")
+    result = []
+    for i in indices:
+        try:
+            result.append(int(parts[i]))
+        except (ValueError, IndexError):
+            return None
+    return tuple(result)
 
 
 def _cancel_kb() -> ReplyKeyboardMarkup:
@@ -137,7 +162,14 @@ def parse_buttons(text: str) -> list[list[dict]] | None:
     if current_row:
         rows.append(current_row)
 
-    return rows if rows else None
+    if not rows:
+        return None
+    if len(rows) > MAX_BUTTON_ROWS:
+        return None
+    for row in rows:
+        if len(row) > MAX_BUTTONS_PER_ROW:
+            return None
+    return rows
 
 
 def build_inline_keyboard(buttons_data: list[list[dict]]) -> InlineKeyboardMarkup:
@@ -159,6 +191,14 @@ async def start_create_post(message: Message, db: aiosqlite.Connection, state: F
     if not channels:
         await message.answer(
             "Сначала подключите хотя бы один канал через «📢 Мои каналы».",
+        )
+        return
+
+    post_count = await queries.count_posts(db, message.from_user.id)
+    if post_count >= MAX_POSTS_PER_USER:
+        await message.answer(
+            f"Достигнут лимит: максимум {MAX_POSTS_PER_USER} постов. "
+            "Удалите старые посты, чтобы создать новые.",
         )
         return
 
@@ -344,7 +384,10 @@ async def cb_select_channel(
     bot: Bot,
     state: FSMContext,
 ):
-    channel_db_id = int(callback.data.split(":")[1])
+    channel_db_id = _parse_cb_int(callback.data)
+    if channel_db_id is None:
+        await callback.answer("Неверные данные.")
+        return
     channel = await queries.get_channel(db, channel_db_id, callback.from_user.id)
 
     if not channel:
@@ -367,17 +410,17 @@ async def cb_select_channel(
             reply_markup=post_kb,
         )
     except Exception as e:
-        logger.error("Failed to publish to channel %s: %s", channel["channel_id"], e)
+        logger.error("Failed to publish to channel %s: %s", channel["channel_id"], e, exc_info=True)
         await callback.message.edit_text(
-            f"Ошибка публикации: {e}\n\n"
-            "Проверьте, что бот всё ещё является администратором канала.",
+            "Не удалось опубликовать пост. "
+            "Проверьте, что бот является администратором канала с правом публикации.",
         )
         await callback.answer()
         return
 
     await queries.add_publication(db, post_id, channel_db_id, sent.message_id)
 
-    title = channel["channel_title"]
+    title = escape(channel["channel_title"])
     await callback.message.edit_text(f"✅ Пост опубликован в «{title}»!")
     await state.clear()
     await callback.message.answer("Главное меню:", reply_markup=main_menu())
@@ -479,7 +522,10 @@ async def _show_posts_page(target, db: aiosqlite.Connection, user_id: int, page:
 
 @router.callback_query(F.data.startswith(CB_POSTS_PAGE))
 async def cb_posts_page(callback: CallbackQuery, db: aiosqlite.Connection):
-    page = int(callback.data.split(":")[1])
+    page = _parse_cb_int(callback.data)
+    if page is None or page < 0:
+        await callback.answer("Неверные данные.")
+        return
     await _show_posts_page(callback, db, callback.from_user.id, page)
     await callback.answer()
 
@@ -494,7 +540,10 @@ async def cb_back_to_list(callback: CallbackQuery, db: aiosqlite.Connection):
 
 @router.callback_query(F.data.startswith(CB_POST_VIEW))
 async def cb_view_post(callback: CallbackQuery, db: aiosqlite.Connection):
-    post_id = int(callback.data.split(":")[1])
+    post_id = _parse_cb_int(callback.data)
+    if post_id is None:
+        await callback.answer("Неверные данные.")
+        return
     post = await queries.get_post(db, post_id, callback.from_user.id)
     if not post:
         await callback.message.edit_text("Пост не найден.")
@@ -518,7 +567,10 @@ async def cb_view_post(callback: CallbackQuery, db: aiosqlite.Connection):
 
 @router.callback_query(F.data.startswith(CB_POST_DELETE))
 async def cb_delete_post(callback: CallbackQuery):
-    post_id = callback.data.split(":")[1]
+    post_id = _parse_cb_int(callback.data)
+    if post_id is None:
+        await callback.answer("Неверные данные.")
+        return
     await callback.message.edit_text(
         "Вы уверены, что хотите удалить этот пост?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -533,7 +585,10 @@ async def cb_delete_post(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith(CB_POST_CONFIRM_DELETE))
 async def cb_confirm_delete_post(callback: CallbackQuery, db: aiosqlite.Connection):
-    post_id = int(callback.data.split(":")[1])
+    post_id = _parse_cb_int(callback.data)
+    if post_id is None:
+        await callback.answer("Неверные данные.")
+        return
     deleted = await queries.delete_post(db, post_id, callback.from_user.id)
     if deleted:
         await callback.message.edit_text("✅ Пост удалён.")
@@ -546,7 +601,10 @@ async def cb_confirm_delete_post(callback: CallbackQuery, db: aiosqlite.Connecti
 
 @router.callback_query(F.data.startswith(CB_POST_REPUB))
 async def cb_republish_post(callback: CallbackQuery, db: aiosqlite.Connection):
-    post_id = int(callback.data.split(":")[1])
+    post_id = _parse_cb_int(callback.data)
+    if post_id is None:
+        await callback.answer("Неверные данные.")
+        return
     post = await queries.get_post(db, post_id, callback.from_user.id)
     if not post:
         await callback.message.edit_text("Пост не найден.")
@@ -568,9 +626,11 @@ async def cb_republish_post(callback: CallbackQuery, db: aiosqlite.Connection):
 
 @router.callback_query(F.data.startswith(CB_REPUB_CHANNEL))
 async def cb_repub_select_channel(callback: CallbackQuery, db: aiosqlite.Connection, bot: Bot):
-    parts = callback.data.split(":")
-    channel_db_id = int(parts[1])
-    post_id = int(parts[2])
+    parsed = _parse_cb_ints(callback.data, 1, 2)
+    if parsed is None:
+        await callback.answer("Неверные данные.")
+        return
+    channel_db_id, post_id = parsed
 
     channel = await queries.get_channel(db, channel_db_id, callback.from_user.id)
     post = await queries.get_post(db, post_id, callback.from_user.id)
@@ -590,16 +650,16 @@ async def cb_repub_select_channel(callback: CallbackQuery, db: aiosqlite.Connect
             reply_markup=post_kb,
         )
     except Exception as e:
-        logger.error("Failed to republish to channel %s: %s", channel["channel_id"], e)
+        logger.error("Failed to republish to channel %s: %s", channel["channel_id"], e, exc_info=True)
         await callback.message.edit_text(
-            f"Ошибка публикации: {e}\n\n"
-            "Проверьте, что бот является администратором канала.",
+            "Не удалось опубликовать пост. "
+            "Проверьте, что бот является администратором канала с правом публикации.",
         )
         await callback.answer()
         return
 
     await queries.add_publication(db, post_id, channel_db_id, sent.message_id)
-    title = channel["channel_title"]
+    title = escape(channel["channel_title"])
     await callback.message.edit_text(f"✅ Пост опубликован в «{title}»!")
     await callback.answer()
 

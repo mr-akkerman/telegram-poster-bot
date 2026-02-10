@@ -1,5 +1,6 @@
 from typing import Any, Awaitable, Callable, Dict
 
+import aiosqlite
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 
@@ -16,5 +17,8 @@ class DatabaseMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        data["db"] = self._database.conn
-        return await handler(event, data)
+        async with self._database.connect() as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys=ON")
+            data["db"] = conn
+            return await handler(event, data)

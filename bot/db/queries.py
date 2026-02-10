@@ -62,6 +62,14 @@ async def get_channel(
     return await cursor.fetchone()
 
 
+async def count_channels(conn: aiosqlite.Connection, user_id: int) -> int:
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM channels WHERE user_id = ?", (user_id,)
+    )
+    row = await cursor.fetchone()
+    return row[0]
+
+
 async def delete_channel(
     conn: aiosqlite.Connection, channel_db_id: int, user_id: int
 ) -> bool:
