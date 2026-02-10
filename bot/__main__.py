@@ -43,7 +43,7 @@ async def main():
 
     logger.info("Bot starting...")
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, drop_pending_updates=True)
     finally:
         await db.close()
         await bot.session.close()
