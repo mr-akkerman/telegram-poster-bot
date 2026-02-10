@@ -1,4 +1,5 @@
 import logging
+from html import escape
 
 from aiogram import Router, F, Bot
 from aiogram.enums import ChatMemberStatus, ChatType
@@ -91,6 +92,23 @@ async def handle_channel_username(message: Message, db: aiosqlite.Connection, bo
 # ── Shared add logic ──────────────────────────────────────────────────────
 
 async def _try_add_channel(message: Message, db: aiosqlite.Connection, bot: Bot, channel_id: int):
+    # Check that the USER is admin/creator of the channel
+    try:
+        user_member = await bot.get_chat_member(channel_id, message.from_user.id)
+    except Exception:
+        await message.answer(
+            "Не удалось проверить ваши права в канале. "
+            "Убедитесь, что канал существует и вы являетесь его администратором.",
+        )
+        return
+
+    if user_member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR):
+        await message.answer(
+            "Вы не являетесь администратором этого канала.\n"
+            "Добавить можно только каналы, в которых вы — администратор.",
+        )
+        return
+
     # Check bot is admin in the channel
     try:
         bot_member = await bot.get_chat_member(channel_id, bot.id)
@@ -124,7 +142,7 @@ async def _try_add_channel(message: Message, db: aiosqlite.Connection, bot: Bot,
     )
 
     if added:
-        title = chat.title or "Без названия"
+        title = escape(chat.title or "Без названия")
         await message.answer(f"✅ Канал «{title}» успешно добавлен!")
     else:
         await message.answer("Этот канал уже добавлен.")

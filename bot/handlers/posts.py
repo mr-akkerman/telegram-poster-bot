@@ -1,5 +1,6 @@
 import json
 import logging
+from html import escape
 from urllib.parse import urlparse
 
 from aiogram import Router, F, Bot
@@ -367,17 +368,17 @@ async def cb_select_channel(
             reply_markup=post_kb,
         )
     except Exception as e:
-        logger.error("Failed to publish to channel %s: %s", channel["channel_id"], e)
+        logger.error("Failed to publish to channel %s: %s", channel["channel_id"], e, exc_info=True)
         await callback.message.edit_text(
-            f"Ошибка публикации: {e}\n\n"
-            "Проверьте, что бот всё ещё является администратором канала.",
+            "Не удалось опубликовать пост. "
+            "Проверьте, что бот является администратором канала с правом публикации.",
         )
         await callback.answer()
         return
 
     await queries.add_publication(db, post_id, channel_db_id, sent.message_id)
 
-    title = channel["channel_title"]
+    title = escape(channel["channel_title"])
     await callback.message.edit_text(f"✅ Пост опубликован в «{title}»!")
     await state.clear()
     await callback.message.answer("Главное меню:", reply_markup=main_menu())
@@ -590,16 +591,16 @@ async def cb_repub_select_channel(callback: CallbackQuery, db: aiosqlite.Connect
             reply_markup=post_kb,
         )
     except Exception as e:
-        logger.error("Failed to republish to channel %s: %s", channel["channel_id"], e)
+        logger.error("Failed to republish to channel %s: %s", channel["channel_id"], e, exc_info=True)
         await callback.message.edit_text(
-            f"Ошибка публикации: {e}\n\n"
-            "Проверьте, что бот является администратором канала.",
+            "Не удалось опубликовать пост. "
+            "Проверьте, что бот является администратором канала с правом публикации.",
         )
         await callback.answer()
         return
 
     await queries.add_publication(db, post_id, channel_db_id, sent.message_id)
-    title = channel["channel_title"]
+    title = escape(channel["channel_title"])
     await callback.message.edit_text(f"✅ Пост опубликован в «{title}»!")
     await callback.answer()
 
