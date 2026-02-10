@@ -11,6 +11,7 @@ load_dotenv()
 class Config:
     bot_token: str
     database_path: Path
+    redis_url: str | None
 
     @staticmethod
     def from_env() -> "Config":
@@ -21,4 +22,6 @@ class Config:
         db_path = Path(getenv("DATABASE_PATH", "/data/bot.db"))
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        return Config(bot_token=token, database_path=db_path)
+        redis_url = getenv("REDIS_URL")
+
+        return Config(bot_token=token, database_path=db_path, redis_url=redis_url)
