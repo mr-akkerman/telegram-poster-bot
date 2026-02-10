@@ -1,11 +1,11 @@
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 import aiosqlite
 
 from bot.db import queries
-from bot.keyboards.menus import main_menu, BTN_MY_POSTS
+from bot.keyboards.menus import main_menu
 
 router = Router()
 
@@ -23,14 +23,3 @@ async def cmd_start(message: Message, db: aiosqlite.Connection, state: FSMContex
         "а затем подключите канал через меню.",
         reply_markup=main_menu(),
     )
-
-
-@router.message(F.text == BTN_MY_POSTS)
-async def menu_my_posts(message: Message, db: aiosqlite.Connection):
-    count = await queries.count_posts(db, message.from_user.id)
-    if count == 0:
-        await message.answer("У вас пока нет созданных постов.")
-    else:
-        await message.answer(
-            f"У вас {count} пост(ов). Управление постами будет доступно в следующем обновлении.",
-        )

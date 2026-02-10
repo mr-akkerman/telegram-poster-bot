@@ -16,7 +16,7 @@ from aiogram.types import (
 import aiosqlite
 
 from bot.db import queries
-from bot.keyboards.menus import BTN_CREATE_POST, main_menu
+from bot.keyboards.menus import BTN_CREATE_POST, BTN_MY_POSTS, main_menu
 from bot.states.post import CreatePost
 
 router = Router()
@@ -30,6 +30,17 @@ CB_POST_EDIT_TEXT = "post_edit_text"
 CB_POST_EDIT_BUTTONS = "post_edit_btn"
 CB_POST_CANCEL = "post_cancel"
 CB_PUB_CHANNEL = "pub_ch:"
+
+# My posts list callbacks
+POSTS_PER_PAGE = 5
+CB_POSTS_PAGE = "posts_pg:"
+CB_POST_VIEW = "post_v:"
+CB_POST_REPUB = "post_rp:"
+CB_POST_DELETE = "post_rm:"
+CB_POST_CONFIRM_DELETE = "post_rm_y:"
+CB_POST_BACK_LIST = "posts_back"
+CB_REPUB_CHANNEL = "rpub_ch:"
+CB_REPUB_CANCEL = "rpub_cancel"
 
 
 def _cancel_kb() -> ReplyKeyboardMarkup:
@@ -378,4 +389,227 @@ async def cb_cancel_channel_select(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("Публикация отменена.")
     await callback.message.answer("Главное меню:", reply_markup=main_menu())
+    await callback.answer()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Stage 6 — My Posts: list, view, republish, delete
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _posts_list_keyboard(posts: list, page: int, total: int) -> InlineKeyboardMarkup:
+    buttons = []
+    for p in posts:
+        preview = p["text"][:40].replace("\n", " ")
+        if len(p["text"]) > 40:
+            preview += "…"
+        buttons.append([
+            InlineKeyboardButton(text=f"📄 {preview}", callback_data=f"{CB_POST_VIEW}{p['id']}"),
+        ])
+
+    # Pagination
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"{CB_POSTS_PAGE}{page - 1}"))
+    total_pages = (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE
+    nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
+    if (page + 1) * POSTS_PER_PAGE < total:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"{CB_POSTS_PAGE}{page + 1}"))
+    if nav:
+        buttons.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _post_actions_keyboard(post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📢 Опубликовать", callback_data=f"{CB_POST_REPUB}{post_id}"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"{CB_POST_DELETE}{post_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="◀️ К списку", callback_data=CB_POST_BACK_LIST),
+        ],
+    ])
+
+
+def _repub_channels_keyboard(channels: list, post_id: int) -> InlineKeyboardMarkup:
+    buttons = []
+    for ch in channels:
+        title = ch["channel_title"]
+        username = f" (@{ch['channel_username']})" if ch["channel_username"] else ""
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{title}{username}",
+                callback_data=f"{CB_REPUB_CHANNEL}{ch['id']}:{post_id}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=CB_REPUB_CANCEL)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ── My Posts list ──────────────────────────────────────────────────────────
+
+@router.message(F.text == BTN_MY_POSTS)
+async def menu_my_posts(message: Message, db: aiosqlite.Connection):
+    await _show_posts_page(message, db, message.from_user.id, page=0)
+
+
+async def _show_posts_page(target, db: aiosqlite.Connection, user_id: int, page: int):
+    """Show a page of posts. target is Message or CallbackQuery."""
+    total = await queries.count_posts(db, user_id)
+    if total == 0:
+        text = "У вас пока нет созданных постов."
+        if isinstance(target, CallbackQuery):
+            await target.message.edit_text(text)
+        else:
+            await target.answer(text)
+        return
+
+    offset = page * POSTS_PER_PAGE
+    posts = await queries.get_posts(db, user_id, limit=POSTS_PER_PAGE, offset=offset)
+    kb = _posts_list_keyboard(posts, page, total)
+
+    text = f"<b>Ваши посты</b> ({total}):"
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith(CB_POSTS_PAGE))
+async def cb_posts_page(callback: CallbackQuery, db: aiosqlite.Connection):
+    page = int(callback.data.split(":")[1])
+    await _show_posts_page(callback, db, callback.from_user.id, page)
+    await callback.answer()
+
+
+@router.callback_query(F.data == CB_POST_BACK_LIST)
+async def cb_back_to_list(callback: CallbackQuery, db: aiosqlite.Connection):
+    await _show_posts_page(callback, db, callback.from_user.id, page=0)
+    await callback.answer()
+
+
+# ── View post ──────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith(CB_POST_VIEW))
+async def cb_view_post(callback: CallbackQuery, db: aiosqlite.Connection):
+    post_id = int(callback.data.split(":")[1])
+    post = await queries.get_post(db, post_id, callback.from_user.id)
+    if not post:
+        await callback.message.edit_text("Пост не найден.")
+        await callback.answer()
+        return
+
+    buttons_data = json.loads(post["buttons"]) if post["buttons"] else None
+    post_kb = build_inline_keyboard(buttons_data) if buttons_data else None
+
+    # Send post preview
+    await callback.message.edit_text("👁 <b>Просмотр поста:</b>")
+    await callback.message.answer(post["text"], reply_markup=post_kb)
+    await callback.message.answer(
+        "Действия с постом:",
+        reply_markup=_post_actions_keyboard(post_id),
+    )
+    await callback.answer()
+
+
+# ── Delete post ────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith(CB_POST_DELETE))
+async def cb_delete_post(callback: CallbackQuery):
+    post_id = callback.data.split(":")[1]
+    await callback.message.edit_text(
+        "Вы уверены, что хотите удалить этот пост?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"{CB_POST_CONFIRM_DELETE}{post_id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=CB_POST_BACK_LIST),
+            ]
+        ]),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_POST_CONFIRM_DELETE))
+async def cb_confirm_delete_post(callback: CallbackQuery, db: aiosqlite.Connection):
+    post_id = int(callback.data.split(":")[1])
+    deleted = await queries.delete_post(db, post_id, callback.from_user.id)
+    if deleted:
+        await callback.message.edit_text("✅ Пост удалён.")
+    else:
+        await callback.message.edit_text("Пост не найден или уже удалён.")
+    await callback.answer()
+
+
+# ── Republish existing post ────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith(CB_POST_REPUB))
+async def cb_republish_post(callback: CallbackQuery, db: aiosqlite.Connection):
+    post_id = int(callback.data.split(":")[1])
+    post = await queries.get_post(db, post_id, callback.from_user.id)
+    if not post:
+        await callback.message.edit_text("Пост не найден.")
+        await callback.answer()
+        return
+
+    channels = await queries.get_channels(db, callback.from_user.id)
+    if not channels:
+        await callback.message.edit_text("У вас нет подключённых каналов.")
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        "Выберите канал для публикации:",
+        reply_markup=_repub_channels_keyboard(channels, post_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_REPUB_CHANNEL))
+async def cb_repub_select_channel(callback: CallbackQuery, db: aiosqlite.Connection, bot: Bot):
+    parts = callback.data.split(":")
+    channel_db_id = int(parts[1])
+    post_id = int(parts[2])
+
+    channel = await queries.get_channel(db, channel_db_id, callback.from_user.id)
+    post = await queries.get_post(db, post_id, callback.from_user.id)
+
+    if not channel or not post:
+        await callback.message.edit_text("Канал или пост не найден.")
+        await callback.answer()
+        return
+
+    buttons_data = json.loads(post["buttons"]) if post["buttons"] else None
+    post_kb = build_inline_keyboard(buttons_data) if buttons_data else None
+
+    try:
+        sent = await bot.send_message(
+            chat_id=channel["channel_id"],
+            text=post["text"],
+            reply_markup=post_kb,
+        )
+    except Exception as e:
+        logger.error("Failed to republish to channel %s: %s", channel["channel_id"], e)
+        await callback.message.edit_text(
+            f"Ошибка публикации: {e}\n\n"
+            "Проверьте, что бот является администратором канала.",
+        )
+        await callback.answer()
+        return
+
+    await queries.add_publication(db, post_id, channel_db_id, sent.message_id)
+    title = channel["channel_title"]
+    await callback.message.edit_text(f"✅ Пост опубликован в «{title}»!")
+    await callback.answer()
+
+
+@router.callback_query(F.data == CB_REPUB_CANCEL)
+async def cb_repub_cancel(callback: CallbackQuery, db: aiosqlite.Connection):
+    await _show_posts_page(callback, db, callback.from_user.id, page=0)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery):
     await callback.answer()
